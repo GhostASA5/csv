@@ -1,0 +1,25 @@
+spring:
+  application:
+    name: ex
+
+  jpa:
+    generate-ddl: true
+    open-in-view: true
+  datasource:
+    url: jdbc:postgresql://localhost:5435/csv
+    username: postgres
+    password: postgres
+
+app:
+  jwt:
+    publicKeyPath: "resources\\jwt-public.pem"
+
+  kafka:
+    bootstrap:
+      server: localhost:9093
+    consumer:
+      group-id: user-group
+    producer:
+      enable: true
+    topic:
+      auth: auth
