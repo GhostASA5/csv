@@ -1,8 +1,9 @@
-package com.example.project;
+package com.example.project.model;
 
+import com.example.project.utils.LocalDateTimeConverter;
+import com.example.project.utils.UuidConverter;
 import com.opencsv.bean.CsvBindByName;
 import com.opencsv.bean.CsvCustomBindByName;
-import com.opencsv.bean.CsvDate;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.Setter;
@@ -19,7 +20,9 @@ import java.util.UUID;
 public class Equipment {
 
     @Id
-    @GeneratedValue(strategy = GenerationType.UUID)
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long idid;
+
     @CsvBindByName(column = "id")
     @CsvCustomBindByName(column = "id", converter = UuidConverter.class)
     private UUID id;

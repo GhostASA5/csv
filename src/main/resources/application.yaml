@@ -2,24 +2,25 @@ spring:
   application:
     name: ex
 
-  jpa:
-    generate-ddl: true
-    open-in-view: true
   datasource:
     url: jdbc:postgresql://localhost:5435/csv
     username: postgres
     password: postgres
+    hikari:
+      connection-timeout: 30000
+      maximum-pool-size: 10
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        jdbc:
+          lob:
+            non_contextual_creation: true
 
 app:
-  jwt:
-    publicKeyPath: "resources\\jwt-public.pem"
-
-  kafka:
-    bootstrap:
-      server: localhost:9093
-    consumer:
-      group-id: user-group
-    producer:
-      enable: true
-    topic:
-      auth: auth
+  validateUrl: https://170.92.10.18:8000/validate-dataset
