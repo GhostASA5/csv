@@ -2,24 +2,41 @@ spring:
   application:
     name: ex
 
-  jpa:
-    generate-ddl: true
-    open-in-view: true
   datasource:
     url: jdbc:postgresql://localhost:5435/csv
     username: postgres
     password: postgres
+    hikari:
+      connection-timeout: 30000
+      maximum-pool-size: 10
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        jdbc:
+          lob:
+            non_contextual_creation: true
 
 app:
   jwt:
-    publicKeyPath: "resources\\jwt-public.pem"
+    publicKeyPath: "classpath:jwt-public.pem"
 
   kafka:
     bootstrap:
-      server: localhost:9093
+      servers: localhost:9093
     consumer:
       group-id: user-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
     producer:
       enable: true
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
     topic:
       auth: auth
