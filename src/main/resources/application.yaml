@@ -21,3 +21,6 @@ spring:
         jdbc:
           lob:
             non_contextual_creation: true
+
+app:
+  validateUrl: https://170.92.10.18:8000/validate-dataset

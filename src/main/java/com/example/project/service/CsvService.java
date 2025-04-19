@@ -1,37 +1,47 @@
-package com.example.project;
+package com.example.project.service;
 
+import com.example.project.model.Equipment;
+import com.example.project.model.Pair;
 import com.example.project.repository.EquipmentRepository;
 import com.example.project.repository.PairRepository;
+import com.example.project.utils.Mock;
 import com.opencsv.bean.CsvToBean;
 import com.opencsv.bean.CsvToBeanBuilder;
 import com.opencsv.bean.HeaderColumnNameMappingStrategy;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EntityManager;
 import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
-import org.springframework.kafka.core.KafkaTemplate;
+import lombok.SneakyThrows;
+import org.springframework.core.io.Resource;
+import org.springframework.http.*;
+import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
 
-import java.io.FileReader;
-import java.io.IOException;
+import java.io.*;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.Map;
 
-@org.springframework.stereotype.Service
+@Service
 @RequiredArgsConstructor
-public class Service {
-
-    private final Notification notification;
+public class CsvService {
 
     private final PairRepository pairRepository;
 
     private final EquipmentRepository equipmentRepository;
-    private final EntityManager em;
+
+    private final FileProcessingClient fileProcessingClient;
 
     @Transactional
-    public void csv() {
-        try (FileReader reader = new FileReader("src/main/resources/100k-1.csv")) {
+    @SneakyThrows
+    public void updateDataset(MultipartFile file) {
+        File fileResource = sendAndGetProcessedFile(file);
+        if (fileResource == null) {
+            throw new RuntimeException("Failed to download file from remote service");
+        }
+
+        try (FileReader reader = new FileReader(fileResource)) {
             HeaderColumnNameMappingStrategy<Equipment> strategy = new HeaderColumnNameMappingStrategy<>();
             strategy.setType(Equipment.class);
 
@@ -40,90 +50,107 @@ public class Service {
                     .build();
 
             List<Equipment> equipments = csvToBean.parse();
-            //equipmentRepository.saveAll(equipments);
+            Mock.addConflict(equipments.subList(0, 10));
 
-
-            delete(equipments);
+            checkDataset(equipments);
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
+    public File sendAndGetProcessedFile(MultipartFile inputFile) throws IOException {
 
+        // 2. Отправляем файл через Feign
+        ResponseEntity<Resource> response = fileProcessingClient.processCsvFile(inputFile);
 
-    private void delete(List<Equipment> equipments) {
+        // 3. Сохраняем ответ во временный файл
+        File outputFile = File.createTempFile("processed_", ".csv");
+        try (InputStream is = response.getBody().getInputStream();
+             FileOutputStream fos = new FileOutputStream(outputFile)) {
+            is.transferTo(fos);
+        }
+
+        return outputFile;
+    }
+
+    private void checkDataset(List<Equipment> equipments) {
         List<Equipment> forRemove = new ArrayList<>();
-        List<Equipment> clone = new ArrayList<>();
         List<Equipment> result = new ArrayList<>();
-        List<Equipment> withConflict = new ArrayList<>();
-        List<Equipment> withoutConflict = new ArrayList<>();
+        Map<Equipment, List<Equipment>> conflicts = new HashMap<>();
+        List<Pair> pairs = new ArrayList<>();
 
         for (Equipment equipment : equipments) {
             long time = System.currentTimeMillis();
             String type = equipment.getType();
             String code = equipment.getCi_code();
             if (type.equalsIgnoreCase("IP-адрес") || type.equals("DNS-запись")) {
-                List<Equipment> subEquipment = clone.subList(clone.indexOf(equipment) + 1, clone.size());
+                List<Equipment> subEquipment = equipments.subList(equipments.indexOf(equipment) + 1, equipments.size());
                 for (Equipment secEquipment : subEquipment) {
                     if (secEquipment.getCi_code().equalsIgnoreCase(code)) {
-                        pairRepository.save(
-                                new Pair(equipment.getId(), secEquipment.getId())
-                        );
-                        equipmentRepository.save(equipment);
-                        equipmentRepository.save(secEquipment);
+                        pairs.add(new Pair(equipment.getId(), secEquipment.getId()));
+                        if (conflicts.containsKey(equipment)) {
+                            conflicts.get(equipment).add(secEquipment);
+                        } else {
+                            List<Equipment> e = new ArrayList<>();
+                            e.add(secEquipment);
+                            conflicts.put(equipment, new ArrayList<>(e));
+                            result.add(equipment);
+                        }
                         forRemove.addAll(List.of(equipment, secEquipment));
-                        clone.removeAll(List.of(equipment, secEquipment));
                     }
                     else if (secEquipment.getDns().equalsIgnoreCase(equipment.getDns())) {
                         if (secEquipment.getType().equalsIgnoreCase(type)) {
-                            Equipment mergedEquipment = cloneEquipment(equipment, secEquipment);
+                            Equipment mergedEquipment = equipment.getUpdated_on().isAfter(secEquipment.getUpdated_on())
+                                    ? cloneEquipment(equipment, secEquipment)
+                                    : cloneEquipment(secEquipment, equipment);
                             // Сохраняем новую объединенную сущность
-                            equipmentRepository.save(mergedEquipment);
-                            // Удаляем старые сущности
-//                            equipmentRepository.delete(equipment);
-//                            equipmentRepository.delete(secEquipment);
-                            // Обновляем пары для новой сущности
-                            clone.removeAll(List.of(equipment, secEquipment));
+                            result.add(mergedEquipment);
                         } else {
-                            pairRepository.save(
-                                    new Pair(equipment.getId(), secEquipment.getId())
-                            );
-                            equipmentRepository.save(equipment);
-                            equipmentRepository.save(secEquipment);
+                            pairs.add(new Pair(equipment.getId(), secEquipment.getId()));
+                            if (conflicts.containsKey(equipment)) {
+                                conflicts.get(equipment).add(secEquipment);
+                            } else {
+                                List<Equipment> e = new ArrayList<>();
+                                e.add(secEquipment);
+                                conflicts.put(equipment, new ArrayList<>(e));
+                                result.add(equipment);
+                            }
                             forRemove.addAll(List.of(equipment, secEquipment));
-                            clone.removeAll(List.of(equipment, secEquipment));
                         }
                     }
                 }
             } else {
-                List<Equipment> subEquipment = equipments.subList(equipments.indexOf(equipment), equipments.size());
+                List<Equipment> subEquipment = equipments.subList(equipments.indexOf(equipment) + 1, equipments.size());
                 for (Equipment secEquipment : subEquipment) {
                     if (secEquipment.getCi_code().equalsIgnoreCase(code)) {
-                        pairRepository.save(
-                                new Pair(equipment.getId(), secEquipment.getId())
-                        );
-                        equipmentRepository.save(equipment);
-                        equipmentRepository.save(secEquipment);
+                        pairs.add(new Pair(equipment.getId(), secEquipment.getId()));
+                        if (conflicts.containsKey(equipment)) {
+                            conflicts.get(equipment).add(secEquipment);
+                        } else {
+                            List<Equipment> e = new ArrayList<>();
+                            e.add(secEquipment);
+                            conflicts.put(equipment, new ArrayList<>(e));
+                            result.add(equipment);
+                        }
                         forRemove.addAll(List.of(equipment, secEquipment));
-                        clone.removeAll(List.of(equipment, secEquipment));
                     }
                     else if (secEquipment.getSerial().equalsIgnoreCase(equipment.getSerial())) {
                         if (secEquipment.getType().equalsIgnoreCase(type)) {
-                            Equipment mergedEquipment = cloneEquipment(equipment, secEquipment);
                             // Сохраняем новую объединенную сущность
-                            equipmentRepository.save(mergedEquipment);
-                            // Удаляем старые сущности
-//                            equipmentRepository.delete(equipment);
-//                            equipmentRepository.delete(secEquipment);
-                            clone.removeAll(List.of(equipment, secEquipment));
-                            // Обновляем пары для новой сущности
+                            Equipment mergedEquipment = equipment.getUpdated_on().isAfter(secEquipment.getUpdated_on())
+                                    ? cloneEquipment(equipment, secEquipment)
+                                    : cloneEquipment(secEquipment, equipment);
+                            result.add(mergedEquipment);
                         } else {
-                            pairRepository.save(
-                                    new Pair(equipment.getId(), secEquipment.getId())
-                            );
-                            equipmentRepository.save(equipment);
-                            equipmentRepository.save(secEquipment);
+                            pairs.add(new Pair(equipment.getId(), secEquipment.getId()));
+                            if (conflicts.containsKey(equipment)) {
+                                conflicts.get(equipment).add(secEquipment);
+                            } else {
+                                List<Equipment> e = new ArrayList<>();
+                                e.add(secEquipment);
+                                conflicts.put(equipment, new ArrayList<>(e));
+                                result.add(equipment);
+                            }
                             forRemove.addAll(List.of(equipment, secEquipment));
-                            clone.removeAll(List.of(equipment, secEquipment));
                         }
                     }
                 }
@@ -131,6 +158,12 @@ public class Service {
             System.out.println(equipments.indexOf(equipment) + " " + (System.currentTimeMillis() - time));
 
         }
+        System.out.println("Нормальных данных: " + equipments.size());
+        System.out.println("Конфликтов: " + forRemove.size());
+
+        equipmentRepository.saveAll(result);
+        conflicts.values().forEach(equipmentRepository::saveAll);
+        pairRepository.saveAll(pairs);
     }
 
     public static Equipment cloneEquipment(Equipment priority, Equipment secondary)  // здесь тоже надо обработать ошибк
